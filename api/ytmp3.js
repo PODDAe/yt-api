@@ -1,4 +1,10 @@
 const axios = require('axios');
+const yts = require('yt-search');
+
+const CONFIG = {
+  audio: { ext: ["mp3", "m4a", "wav", "opus", "flac"], q: ["best", "320k", "128k"] },
+  video: { ext: ["mp4"], q: ["144p", "240p", "360p", "480p", "720p", "1080p"] }
+};
 
 const headers = {
   accept: "application/json",
@@ -20,9 +26,17 @@ const poll = async (statusUrl) => {
   }
 };
 
-async function convertToMP3(url) {
+async function convertYouTube(url, format = "mp3", quality = "128k") {
   try {
-    // Get video info via oEmbed
+    const type = Object.keys(CONFIG).find(k => CONFIG[k].ext.includes(format));
+    if (!type) throw new Error(`Unsupported format: ${format}`);
+    
+    const allowedQualities = CONFIG[type].q;
+    if (!allowedQualities.includes(quality)) {
+      throw new Error(`Invalid quality for ${type}. Choose: ${allowedQualities.join(", ")}`);
+    }
+
+    // Get basic metadata via oEmbed (reliable & fast)
     const { data: meta } = await axios.get("https://www.youtube.com/oembed", {
       params: { url, format: "json" }
     });
@@ -31,10 +45,11 @@ async function convertToMP3(url) {
       url,
       os: "android",
       output: {
-        type: "audio",
-        format: "mp3"
+        type,
+        format,
+        ...(type === "video" && { quality })
       },
-      audio: { bitrate: "128k" }
+      ...(type === "audio" && { audio: { bitrate: quality } })
     };
 
     // Try hub → fallback to api subdomain
@@ -53,95 +68,93 @@ async function convertToMP3(url) {
     const result = await poll(initData.statusUrl);
 
     return {
-      success: true,
       title: meta.title,
       author: meta.author_name,
-      thumbnail: meta.thumbnail_url,
+      duration: meta.duration || result.duration || "Unknown",
+      thumbnail: meta.thumbnail_url || null,
+      views: null, // oEmbed doesn't give views → optional: use yts if needed
       downloadUrl: result.downloadUrl,
-      filename: `${meta.title.replace(/[^\w\s-]/gi, '')}.mp3`
+      format,
+      quality,
+      filename: `${meta.title.replace(/[^\w\s-]/gi, '')}.${format}`
     };
   } catch (err) {
     console.error("Convert error:", err.message);
     return {
-      success: false,
+      status: false,
       message: err.message || "Failed to retrieve file"
     };
   }
 }
 
-module.exports = async (req, res) => {
-  // Set CORS headers
-  res.setHeader('Content-Type', 'application/json');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+// ────────────────────────────────────────
+// Public API functions
+// ────────────────────────────────────────
+
+async function ytmp3(url) {
+  if (!url) return { status: false, message: "YouTube URL is required" };
   
-  // Handle preflight request
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  const result = await convertYouTube(url, "mp3", "128k");
+  if (result.status === false) return result;
 
-  // Handle GET request with query parameter
-  if (req.method === 'GET') {
-    const { url } = req.query;
-    
-    if (!url) {
-      return res.status(400).json({
-        success: false,
-        message: "YouTube URL is required. Use ?url= parameter"
-      });
-    }
+  return {
+    status: true,
+    creator: "@Dtz_Dula",
+    title: result.title,
+    channel: result.author,
+    duration: result.duration,
+    views: "—", // can be improved later with yts
+    thumbnail: result.thumbnail,
+    downloadUrl: result.downloadUrl,
+    filename: result.filename,
+    quality: "128kbps"
+  };
+}
 
-    const result = await convertToMP3(url);
-    
-    if (!result.success) {
-      return res.status(500).json(result);
-    }
+async function ytmp4(url, quality = "720p") {
+  if (!url) return { status: false, message: "YouTube URL is required" };
+  
+  const result = await convertYouTube(url, "mp4", quality);
+  if (result.status === false) return result;
 
-    return res.status(200).json({
-      success: true,
+  return {
+    status: true,
+    creator: "@Dtz_Dula",
+    title: result.title,
+    channel: result.author,
+    duration: result.duration,
+    views: "—",
+    thumbnail: result.thumbnail,
+    downloadUrl: result.downloadUrl,
+    quality_list: {
+      [quality]: {
+        resolution: quality,
+        size: "Unknown",
+        url: result.downloadUrl
+      }
+    },
+    filename: result.filename
+  };
+}
+
+async function search(teks) {
+  try {
+    let data = await yts(teks);
+    return {
+      status: true,
       creator: "@Dtz_Dula",
-      title: result.title,
-      channel: result.author,
-      thumbnail: result.thumbnail,
-      downloadUrl: result.downloadUrl,
-      filename: result.filename,
-      quality: "128kbps"
-    });
+      results: data.all
+    };
+  } catch (error) {
+    return {
+      status: false,
+      message: error.message
+    };
   }
+}
 
-  // Handle POST request with JSON body
-  if (req.method === 'POST') {
-    const { url } = req.body;
-    
-    if (!url) {
-      return res.status(400).json({
-        success: false,
-        message: "YouTube URL is required in request body"
-      });
-    }
-
-    const result = await convertToMP3(url);
-    
-    if (!result.success) {
-      return res.status(500).json(result);
-    }
-
-    return res.status(200).json({
-      success: true,
-      creator: "@Dtz_Dula",
-      title: result.title,
-      channel: result.author,
-      thumbnail: result.thumbnail,
-      downloadUrl: result.downloadUrl,
-      filename: result.filename,
-      quality: "128kbps"
-    });
-  }
-
-  // Handle unsupported methods
-  return res.status(405).json({
-    success: false,
-    message: "Method not allowed. Use GET or POST."
-  });
-};
+module.exports = {
+  search,
+  ytmp3,
+  ytmp4
+}; 
