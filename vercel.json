@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "functions": {
+    "api/ytmp3.js": {
+      "maxDuration": 60
+    }
+  },
+  "routes": [
+    {
+      "src": "/ytmp3",
+      "dest": "/api/ytmp3.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/api/ytmp3.js"
+    }
+  ]
+}
